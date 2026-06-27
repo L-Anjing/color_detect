@@ -1,0 +1,28 @@
+# color_detect 双摄像头视觉信标配置
+/color_detect_node:
+  ros__parameters:
+    # 双摄像头话题
+    camera_topic_left:  "/cam_left/image_raw"
+    camera_topic_right: "/cam_right/image_raw"
+
+    resize_width: 640
+
+    hsv:
+      v_threshold: 200
+      s_threshold_white: 40
+      hue_tolerance: 12
+
+    beacon:
+      n_segments: 2
+      sync_color: "YELLOW"
+      color_wait: "CYAN"
+      color_go: "MAGENTA"
+      min_aspect_ratio: 3.0
+      min_area: 50
+
+    filter:
+      temporal_window: 5
+      debounce_frames: 3
+      lost_timeout_ms: 200
+
+    debug: false
