@@ -7,18 +7,31 @@
 
     resize_width: 640
 
+    # ── CLAHE（自适应直方图均衡） ──
+    clahe:
+      enabled: true
+      clip_limit: 2.0
+      grid_size: 8
+
     hsv:
       v_threshold: 200
       s_threshold_white: 40
+      saturation_threshold: 100   # S 通道阈值（过滤白色灯管）
       hue_tolerance: 12
+
+    morph:
+      open_size: 3
+      close_size: 7
+      dilation_size: 3
 
     beacon:
       n_segments: 2
       sync_color: "YELLOW"
-      color_wait: "CYAN"
-      color_go: "MAGENTA"
+      color_wait: "RED"
+      color_go: "GREEN"
       min_aspect_ratio: 3.0
       min_area: 50
+      uniformity_threshold: 0.3   # 亮度均匀性门槛（std/mean）
 
     filter:
       temporal_window: 5

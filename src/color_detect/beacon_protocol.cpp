@@ -13,6 +13,7 @@ static ColorClass str_to_color(const std::string& s) {
   if (u == "YELLOW")  return ColorClass::YELLOW;
   if (u == "MAGENTA") return ColorClass::MAGENTA;
   if (u == "GREEN")   return ColorClass::GREEN;
+  if (u == "RED")     return ColorClass::RED;
   return ColorClass::UNKNOWN;
 }
 

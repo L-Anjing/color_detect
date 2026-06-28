@@ -17,6 +17,7 @@ enum class ColorClass : uint8_t {
   YELLOW,
   MAGENTA,
   GREEN,
+  RED,
   COUNT
 };
 
@@ -35,6 +36,9 @@ public:
   ColorClass classify_pixel(const cv::Vec3b& hsv) const;
   ColorClass classify_with_consistency(const cv::Mat& roi_hsv,
                                        float* consistency = nullptr) const;
+  /// @brief 基于 Hue 直方图峰值分类（比像素投票更抗噪）
+  ColorClass classify_hue_histogram(const cv::Mat& roi_hsv,
+                                    float* confidence = nullptr) const;
   const ColorRange& get_range(ColorClass c) const;
 
 private:

@@ -23,6 +23,8 @@ void ColorClassifier::build_ranges() {
     140 - ht/2, 150 + ht/2, smin, 255, vmin, 255};
   ranges_[static_cast<size_t>(ColorClass::GREEN)] = {
     55 - ht/2, 65 + ht/2, smin, 255, vmin, 255};
+  ranges_[static_cast<size_t>(ColorClass::RED)] = {
+    172 - ht/2, 180, smin, 255, vmin, 255};
 }
 
 ColorClass ColorClassifier::classify(const cv::Mat& roi_hsv,
@@ -55,7 +57,7 @@ ColorClass ColorClassifier::classify_pixel(const cv::Vec3b& hsv) const {
   if (s < config_.s_threshold_white)
     return (v >= config_.v_threshold) ? ColorClass::WHITE : ColorClass::UNKNOWN;
   for (size_t i = static_cast<size_t>(ColorClass::CYAN);
-       i <= static_cast<size_t>(ColorClass::GREEN); ++i) {
+       i <= static_cast<size_t>(ColorClass::RED); ++i) {
     auto& r = ranges_[i];
     if (h >= r.h_low && h <= r.h_high && s >= r.s_low && s <= r.s_high &&
         v >= r.v_low && v <= r.v_high)
@@ -91,6 +93,68 @@ ColorClass ColorClassifier::classify_with_consistency(
 
 const ColorRange& ColorClassifier::get_range(ColorClass c) const {
   return ranges_[static_cast<size_t>(c)];
+}
+
+ColorClass ColorClassifier::classify_hue_histogram(
+    const cv::Mat& roi_hsv, float* confidence) const {
+  if (roi_hsv.empty()) return ColorClass::UNKNOWN;
+
+  // Hue 直方图：36 bins，每 bin 5°
+  const int bins = 36;
+  std::array<int, bins> hist{};
+  int total = 0;
+
+  for (int y = 0; y < roi_hsv.rows; ++y) {
+    for (int x = 0; x < roi_hsv.cols; ++x) {
+      auto& p = roi_hsv.at<cv::Vec3b>(y, x);
+      uint8_t h = p[0], s = p[1], v = p[2];
+      // 只统计饱和且够亮的像素
+      if (s < config_.s_min_for_color) continue;
+      if (v < config_.v_min_bright) continue;
+      int bin = (h * bins) / 180;
+      if (bin >= bins) bin = bins - 1;
+      hist[bin]++;
+      total++;
+    }
+  }
+
+  if (total == 0) {
+    if (confidence) *confidence = 0.0f;
+    return ColorClass::UNKNOWN;
+  }
+
+  // 找峰值 bin
+  int peak_bin = 0, peak_count = 0;
+  for (int i = 0; i < bins; i++) {
+    if (hist[i] > peak_count) { peak_count = hist[i]; peak_bin = i; }
+  }
+
+  // 峰值中心 hue
+  float peak_hue = (peak_bin + 0.5f) * (180.0f / bins);
+
+  // 匹配所有彩色颜色（跳过 UNKNOWN 和 WHITE）
+  float best_dist = 1e9f;
+  ColorClass best_color = ColorClass::UNKNOWN;
+  for (size_t i = static_cast<size_t>(ColorClass::CYAN);
+       i <= static_cast<size_t>(ColorClass::RED); ++i) {
+    auto& r = ranges_[i];
+    float range_center = (r.h_low + r.h_high) / 2.0f;
+    float dist = std::abs(peak_hue - range_center);
+    // 处理 Hue 环绕（红色在 0/180 边界）
+    if (dist > 90.0f) dist = 180.0f - dist;
+    if (dist < best_dist) { best_dist = dist; best_color = static_cast<ColorClass>(i); }
+  }
+
+  float conf = static_cast<float>(peak_count) / total;
+  if (confidence) *confidence = conf;
+
+  // 峰值 bin 的置信度必须够高，且距离已知颜色范围不能太远
+  auto& r = ranges_[static_cast<size_t>(best_color)];
+  float half_range = (r.h_high - r.h_low) / 2.0f + 5.0f;  // 允许 5° 余量
+  if (conf >= config_.color_consistency_thresh && best_dist <= half_range)
+    return best_color;
+
+  return ColorClass::UNKNOWN;
 }
 
 }  // namespace color_detect

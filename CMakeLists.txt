@@ -4,6 +4,51 @@ project(color_detect)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# ---- 构建模式选项 ----
+option(BUILD_STANDALONE "Build standalone color_detect (no ROS2)" OFF)
+
+# ═════════════════════════════════════════════
+#  独立模式 — 无 ROS2，直接读取 /dev/video*
+# ═════════════════════════════════════════════
+if(BUILD_STANDALONE)
+
+  find_package(OpenCV REQUIRED COMPONENTS core imgproc highgui videoio)
+
+  # ---- 包含路径 ----
+  include_directories(inc)
+
+  # ── Beacon 核心库（纯 OpenCV） ──
+  set(BEACON_SOURCES
+      src/color_detect/color_classifier.cpp
+      src/color_detect/beacon_protocol.cpp
+      src/color_detect/state_machine.cpp
+      src/color_detect/beacon_detector.cpp
+      src/color_detect/beacon_fusion.cpp
+  )
+
+  add_library(color_detect_core STATIC ${BEACON_SOURCES})
+  target_include_directories(color_detect_core PUBLIC inc)
+  target_link_libraries(color_detect_core PUBLIC ${OpenCV_LIBS})
+
+  # ── 独立运行节点 ──
+  add_executable(color_detect_standalone
+      src/color_detect/color_detect_standalone.cpp)
+
+  target_include_directories(color_detect_standalone PRIVATE inc)
+  target_link_libraries(color_detect_standalone
+      color_detect_core
+      ${OpenCV_LIBS})
+
+  message(STATUS "[color_detect] Standalone mode — no ROS2 required")
+  message(STATUS "[color_detect]   Target: color_detect_standalone")
+  return()
+
+endif()
+
+# ═════════════════════════════════════════════
+#  ROS2 模式 — 标准 ROS2 节点
+# ═════════════════════════════════════════════
+
 # ---- ROS2 + OpenCV 依赖 ----
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
@@ -39,7 +84,7 @@ endif()
 include_directories(inc ${OpenCV_INCLUDE_DIRS})
 
 # ─────────────────────────────────────────────
-#  Beacon 核心库（静态库，可被其他节点复用）
+#  Beacon 核心库（静态库，纯 OpenCV，可被其他节点复用）
 # ─────────────────────────────────────────────
 set(BEACON_SOURCES
     src/color_detect/color_classifier.cpp
@@ -50,9 +95,9 @@ set(BEACON_SOURCES
 )
 
 add_library(color_detect_core STATIC ${BEACON_SOURCES})
+target_include_directories(color_detect_core PUBLIC inc)
 target_link_libraries(color_detect_core PUBLIC ${OpenCV_LIBS})
-ament_target_dependencies(color_detect_core PUBLIC
-    rclcpp std_msgs sensor_msgs cv_bridge)
+# 注意：核心库源代码不依赖任何 ROS2 头文件，无需 ament_target_dependencies
 
 # ─────────────────────────────────────────────
 #  检测节点

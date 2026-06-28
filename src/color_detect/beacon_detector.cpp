@@ -61,6 +61,18 @@ cv::Mat BeaconDetector::preprocess(const cv::Mat& bgr_frame) {
   }
   cv::Mat hsv;
   cv::cvtColor(frame, hsv, cv::COLOR_BGR2HSV);
+
+  // ── CLAHE：对 V 通道做自适应直方图均衡，改善不均匀光照 ──
+  if (config_.use_clahe) {
+    std::vector<cv::Mat> channels;
+    cv::split(hsv, channels);
+    auto clahe = cv::createCLAHE(config_.clahe_clip_limit,
+                                 cv::Size(config_.clahe_grid_size,
+                                          config_.clahe_grid_size));
+    clahe->apply(channels[2], channels[2]);
+    cv::merge(channels, hsv);
+  }
+
   if (config_.gaussian_kernel > 0) {
     int k = config_.gaussian_kernel | 1;
     cv::GaussianBlur(hsv, hsv, cv::Size(k, k), 0);
@@ -70,17 +82,42 @@ cv::Mat BeaconDetector::preprocess(const cv::Mat& bgr_frame) {
 
 std::vector<BeaconCandidate> BeaconDetector::find_candidates(
     const cv::Mat& bgr_frame, const cv::Mat& hsv) {
-  cv::Mat v_channel, mask;
-  cv::extractChannel(hsv, v_channel, 2);
-  cv::threshold(v_channel, mask, config_.v_threshold, 255, cv::THRESH_BINARY);
+  // ── 1. 提取 S 和 V 通道 ──
+  std::vector<cv::Mat> channels;
+  cv::split(hsv, channels);
+  cv::Mat s_ch = channels[1];
+  cv::Mat v_ch = channels[2];
 
+  // ── 2. S 通道二值化（过滤低饱和度的白色灯管/反光） ──
+  cv::Mat s_mask;
+  cv::threshold(s_ch, s_mask, config_.saturation_threshold, 255, cv::THRESH_BINARY);
+
+  // ── 3. 自适应 V 阈值 ──
+  //    在 S 通过的区域上计算平均亮度，取 max(固定阈值, 平均亮度*0.85)
+  double mean_v = cv::mean(v_ch, s_mask)[0];
+  int adaptive_v = std::max(config_.v_threshold, static_cast<int>(mean_v * 0.85));
+
+  cv::Mat v_mask;
+  cv::threshold(v_ch, v_mask, adaptive_v, 255, cv::THRESH_BINARY);
+
+  // ── 4. 合并：只有高饱和 + 够亮的像素通过 ──
+  cv::Mat mask = s_mask & v_mask;
+
+  // ── 5. 形态学：开运算去噪 → 闭运算填补 → 膨胀合并碎片 ──
   auto ok = cv::getStructuringElement(cv::MORPH_ELLIPSE,
       cv::Size(config_.morph_open_size, config_.morph_open_size));
   auto ck = cv::getStructuringElement(cv::MORPH_ELLIPSE,
       cv::Size(config_.morph_close_size, config_.morph_close_size));
+  auto dk = cv::getStructuringElement(cv::MORPH_ELLIPSE,
+      cv::Size(config_.dilation_size, config_.dilation_size));
+
   cv::morphologyEx(mask, mask, cv::MORPH_OPEN, ok);
   cv::morphologyEx(mask, mask, cv::MORPH_CLOSE, ck);
+  if (config_.dilation_size > 1) {
+    cv::dilate(mask, mask, dk);
+  }
 
+  // ── 6. 轮廓提取 ──
   std::vector<std::vector<cv::Point>> contours;
   cv::findContours(mask, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
 
@@ -91,10 +128,24 @@ std::vector<BeaconCandidate> BeaconDetector::find_candidates(
   for (auto& c : contours) {
     double a = cv::contourArea(c);
     if (a < config_.min_area_px || a > max_a) continue;
+
+    // ── 7. 亮度均匀性筛选 ──
+    //    计算轮廓内 V 通道的 std/mean，拒绝反光/局部遮挡
+    cv::Mat contour_mask = cv::Mat::zeros(hsv.size(), CV_8UC1);
+    cv::drawContours(contour_mask, std::vector<std::vector<cv::Point>>{c}, -1,
+                     cv::Scalar(255), cv::FILLED);
+    cv::Scalar mean_sc, std_sc;
+    cv::meanStdDev(v_ch, mean_sc, std_sc, contour_mask);
+    float v_mean = static_cast<float>(mean_sc[0]);
+    float v_std  = static_cast<float>(std_sc[0]);
+    if (v_mean > 1.0f && (v_std / v_mean) > config_.uniformity_threshold) continue;
+
+    // ── 8. 凸度筛选 ──
     std::vector<cv::Point> hull;
     cv::convexHull(c, hull);
     if (a / cv::contourArea(hull) < config_.min_solidity) continue;
 
+    // ── 9. 长宽比筛选 ──
     auto rr = cv::minAreaRect(c);
     float w = rr.size.width, hh = rr.size.height;
     if (w < 1 || hh < 1) continue;
@@ -147,9 +198,10 @@ std::vector<ColorClass> BeaconDetector::segment_candidate(
     for (auto& cp : c4) poly.push_back({(int)std::round(cp.x), (int)std::round(cp.y)});
     cv::fillConvexPoly(sm, poly, 255);
     cv::Mat sh; hsv.copyTo(sh, sm);
-    float cons = 0;
-    cols[i] = classifier_.classify_with_consistency(sh, &cons);
-    if (cons < config_.color_consistency_thresh) cols[i] = ColorClass::UNKNOWN;
+    float conf = 0;
+    // 使用 Hue 直方图峰值分类（比像素投票更抗噪）
+    cols[i] = classifier_.classify_hue_histogram(sh, &conf);
+    if (conf < config_.color_consistency_thresh) cols[i] = ColorClass::UNKNOWN;
   }
   return cols;
 }
@@ -201,8 +253,7 @@ void BeaconDetector::draw_debug(const cv::Mat& frame,
       cv::line(debug_overlay_, v[i], v[(i+1)%4], cv::Scalar(0,255,0), 2);
   }
   std::string info = std::string(BeaconState::state_name(state.state))
-      + " c:" + std::to_string(state.confidence).substr(0,4)
-      + " p:" + (state.is_partial ? "Y" : "N");
+      + " c:" + std::to_string(state.confidence).substr(0,4);
   cv::putText(debug_overlay_, info, {30,30},
       cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(0,0,255), 2);
 }
