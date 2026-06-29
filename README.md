@@ -1,220 +1,143 @@
-# color_detect — 视觉信标通信系统
+# color_detect
 
-基于 LED 灯带、纯 OpenCV（无深度学习）的机器人间视觉通信系统。
+`color_detect` 用于识别机器人灯带信标。当前工程主线是 ROS2 双摄版本：
 
-支持 **ROS2 模式**（配合 camera_stream 双摄）和 **Standalone 模式**（单 USB 摄像头直读，无需 ROS2）。
+`camera_stream` 发布 `/cam_left/image_raw`、`/cam_right/image_raw`，`color_detect` 订阅两路图像，分别检测后融合发布 `/color_detect/state`。
 
-## 通信协议
+## 原理
 
-### 灯带编码（2段）
+灯带按 2 段颜色编码：
 
-```
-[YELLOW-SYNC] [DATA]
-   固定参考      RED   → WAIT(1)
-                GREEN → GO(2)
+```text
+[SYNC] [DATA]
 ```
 
-同步头和数据色均可通过参数配置。
+默认协议：
 
-### 三态输出
+| 状态 | 编码 | 输出 |
+|------|------|------|
+| UNKNOWN | 未检测到有效同步头，或左右结果冲突 | `0` |
+| WAIT | `YELLOW + RED` | `1` |
+| GO | `YELLOW + GREEN` | `2` |
 
-| 值 | 名称 | 含义 | 灯带颜色 |
-|----|------|------|---------|
-| 0 | UNKNOWN | 无法确定 | 无同步头 / 颜色异常 / 左右冲突 |
-| 1 | WAIT | 等待 | 🟡YELLOW + 🔴RED |
-| 2 | GO | 前进/动作 | 🟡YELLOW + 🟢GREEN |
+检测流程：
 
-## 依赖
+1. 图像从 BGR 转 HSV。
+2. 对 V 通道做 CLAHE，增强不均匀光照下的灯带亮度。
+3. 用 S/V 阈值提取高饱和、高亮区域，过滤白色灯管和反光。
+4. 形态学处理后找轮廓，用面积、长宽比、凸度、亮度均匀性筛选长条灯带。
+5. 对 `minAreaRect` 长边切成 2 段，用 Hue 直方图判断每段颜色。
+6. 左右相机各自输出状态，再由 `BeaconFusion` 融合。
 
-### Standalone 模式（Ubuntu 20.04，无需 ROS2）
+## 坐标计算
+
+检测器会取灯带外接旋转矩形的中心点和长边像素长度。
+
+已知灯带真实长度 `beacon_real_length_m` 和当前相机内参 `fx/fy/cx/cy` 后，使用单目成像关系做粗定位：
+
+```text
+z = fx * real_length / length_px
+x = (u - cx) * z / fx
+y = (v - cy) * z / fy
+yaw = atan2(x, z)
+```
+
+坐标含义：
+
+| 字段 | 含义 |
+|------|------|
+| `x` | 相机坐标系横向位置，右为正，单位 m |
+| `y` | 相机坐标系纵向位置，下为正，单位 m |
+| `z` | 相机前方距离，单位 m |
+| `yaw` | 目标相对相机光轴的水平偏角，单位 deg |
+
+左右相机使用各自的标定内参：左图用 `pose.left.*`，右图用 `pose.right.*`。双摄同时看到目标且状态一致时，当前按左右置信度对坐标加权平均。后续如果加入左右相机到机器人坐标系的外参，可以把这里升级成机器人坐标系融合。
+
+## 使用
+
+启动相机发布：
 
 ```bash
-sudo apt install libopencv-dev
+ros2 launch camera_stream camera.launch.py
 ```
 
-### ROS2 模式（Ubuntu 22.04+）
+启动灯带检测：
 
 ```bash
-sudo apt install ros-humble-cv-bridge ros-humble-sensor-msgs libopencv-dev
-
-# 串口（可选）
-# 从 https://github.com/wjwwood/serial 编译安装
+ros2 launch color_detect color_detect.launch.py
 ```
 
-## 编译
-
-### Standalone 模式（无 ROS2，本地调试用）
+启动灯带检测并通过 USB-TTL 输出到单片机：
 
 ```bash
-cd /home/li/workspace/src
-bash build.sh --standalone
-# 可执行文件: ./build_standalone/color_detect_standalone
+ros2 launch color_detect color_detect_all.launch.py serial_port:=/dev/ttyACM0
 ```
 
-### ROS2 模式
+查看融合结果：
 
 ```bash
-cd ~/workspace
-colcon build --packages-select color_detect
-source install/setup.bash
-```
-
-## 用法
-
-### Standalone 模式（单 USB 摄像头直读）
-
-```bash
-# 默认 /dev/video0
-./build_standalone/color_detect_standalone
-
-# 指定设备和配置文件
-./build_standalone/color_detect_standalone \
-    --device /dev/video1 \
-    --config color_detect/config/color_detect_config.yaml
-```
-
-按键：`q`=退出  `d`=切换调试叠加  `f`=全屏
-
-### ROS2 模式（双摄 + 串口）
-
-```bash
-# 检测 + 串口（摄像头由 camera_stream 独立提供）
-ros2 launch color_detect color_detect_all.launch.py \
-  serial_port:=/dev/ttyACM0
-
-# 仅检测（无串口）
-ros2 run color_detect color_detect_node --ros-args \
-  -p camera_topic_left:=/cam_left/image_raw \
-  -p camera_topic_right:=/cam_right/image_raw \
-  -p debug:=true
-
-# 查看检测结果
 ros2 topic echo /color_detect/state
-# → {"s":1,"c":0.95,"v":2,"a":12.3}
-
-# 调试画面
-ros2 run image_view image_view /color_detect/debug_left
 ```
+
+开启调试图：
+
+```bash
+ros2 launch color_detect color_detect.launch.py debug:=true
+ros2 run image_view image_view /color_detect/debug_left
+ros2 run image_view image_view /color_detect/debug_right
+```
+
+输出示例：
+
+```json
+{"s":1,"c":0.95,"v":2,"a":3.1,"u":642.0,"p":358.0,"l":120.0,"pv":1,"x":0.01,"y":-0.01,"z":1.0,"yaw":0.6}
+```
+
+字段说明：
+
+| 字段 | 含义 |
+|------|------|
+| `s` | 状态，`0=UNKNOWN`，`1=WAIT`，`2=GO` |
+| `c` | 置信度 |
+| `v` | 可见颜色段数量 |
+| `a` | 灯带图像角度 |
+| `u,p` | 灯带中心像素坐标 |
+| `l` | 灯带长边像素长度 |
+| `pv` | 坐标是否有效 |
+| `x,y,z,yaw` | 粗定位结果 |
+
+串口输出协议：
+
+```text
+HEAD(0xFF 0xFE) + state(1B) + x/y/z/yaw(4B float) + TAIL(0xAA 0xDD)
+```
+
+当检测无效、坐标无效或消息解析异常时，`state/x/y/z/yaw` 全部发送 0。
 
 ## 参数
 
-### CLAHE（自适应直方图均衡）
+配置文件：
 
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| `clahe.enabled` | true | 启用 CLAHE，改善不均匀光照 |
-| `clahe.clip_limit` | 2.0 | 对比度限制 |
-| `clahe.grid_size` | 8 | 网格大小 |
+[config/color_detect_config.yaml](/home/li/workspace/src/color_detect/config/color_detect_config.yaml)
 
-### HSV 阈值
+主要参数：
 
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| `hsv.v_threshold` | 200 | V 通道基础阈值，LED 主动发光特征 |
-| `hsv.s_threshold_white` | 40 | 白色/低饱和区分阈值 |
-| `hsv.saturation_threshold` | 100 | S 通道二值化阈值（**过滤白色灯管**） |
-| `hsv.hue_tolerance` | 12 | H 通道匹配容差 |
-
-### 形态学
-
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| `morph.open_size` | 3 | 开运算核大小（去噪） |
-| `morph.close_size` | 7 | 闭运算核大小（填孔） |
-| `morph.dilation_size` | 3 | 膨胀核大小（**合并碎片**） |
-
-### 协议颜色
-
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| `beacon.sync_color` | YELLOW | 同步头颜色 |
-| `beacon.color_wait` | RED | WAIT 对应的数据色 |
-| `beacon.color_go` | GREEN | GO 对应的数据色 |
-
-### 候选筛选
-
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| `beacon.min_aspect_ratio` | 3.0 | 最小长宽比 |
-| `beacon.min_area` | 50 | 最小面积(px) |
-| `beacon.uniformity_threshold` | 0.3 | 亮度均匀性门槛（**std/mean，过滤反光**） |
-
-### 滤波
-
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| `filter.temporal_window` | 5 | 滑动窗口帧数 |
-| `filter.debounce_frames` | 3 | 状态去抖连续帧数 |
-| `filter.lost_timeout_ms` | 200 | 目标丢失超时(ms) |
-
-## 检测流程
-
-```
-输入帧 (bgr8)
-  ↓
-① 等比例缩放 → 640px 宽
-② BGR → HSV
-③ CLAHE ▷ V 通道自适应直方图均衡（改善不均匀光照）
-④ S 通道阈值（S > 100）→ 过滤白色灯管/低饱和反光
-⑤ 自适应 V 阈值（max(固定值, 亮区平均V×0.85)）
-⑥ 合并 mask = S_mask & V_mask
-⑦ 形态学：开运算去噪 → 闭运算填孔 → 膨胀合并碎片
-⑧ 轮廓提取
-⑨ 面积 + 长宽比 + 凸度筛选
-⑩ 亮度均匀性筛选（std/mean < 0.3，拒绝反光/局部遮挡）
-⑪ minAreaRect → 主轴方向
-⑫ 沿主轴分割为 2 段 ROI
-⑬ 每段 Hue 直方图分类（36-bin 峰值检测，比像素投票更抗噪）
-⑭ 置信度计算 + 一致性检查
-⑮ 协议解码：找到同步色 → 读取数据色 → 映射为三态
-⑯ 状态机：滑动窗口多数决 + 去抖 + 丢失保持
-  ↓
-输出融合状态
-```
-
-## 串口协议
-
-```
- HEAD(0xFF 0xFE) + state(1B) + TAIL(0xAA 0xDD)
-                   ↓
-             0 = UNKNOWN
-             1 = WAIT
-             2 = GO
-```
-
-## 文件结构
-
-```
-color_detect/
-├── inc/color_detect/
-│   ├── beacon_config.hpp       参数配置
-│   ├── color_classifier.hpp    HSV 颜色分类器（含 Hue 直方图分类）
-│   ├── beacon_protocol.hpp     2段协议解码
-│   ├── state_machine.hpp       5态状态机（去抖+丢失恢复）
-│   ├── beacon_detector.hpp     核心检测器
-│   └── beacon_fusion.hpp       双相机融合投票
-├── src/color_detect/
-│   ├── *.cpp                   (同上)
-│   ├── color_detect_node.cpp   ROS2 双摄检测节点
-│   ├── color_detect_standalone.cpp  Standalone 单摄节点（无需 ROS2）
-│   └── serial_bridge_node.cpp  串口桥接节点
-├── config/color_detect_config.yaml
-├── launch/color_detect*.launch.py
-└── CMakeLists.txt
-```
-
-## 本地测试（无 ROS2）
-
-用电脑屏幕模拟信标：
-
-```bash
-# 1. 生成测试图
-python3 generate_test_beacon.py
-# → beacon_wait.png（🟡+🔴=WAIT）
-# → beacon_go.png（🟡+🟢=GO）
-
-# 2. 全屏显示测试图，摄像头对准屏幕
-
-# 3. 运行检测
-./build_standalone/color_detect_standalone --device /dev/video0
-```
+| 参数 | 说明 |
+|------|------|
+| `camera_topic_left/right` | 左右相机图像话题，默认 `/cam_left/image_raw`、`/cam_right/image_raw` |
+| `resize_width` | 检测前缩放宽度，检测结果会映射回原图坐标 |
+| `clahe.*` | 亮度增强参数 |
+| `hsv.*` | HSV 阈值，主要影响颜色提取 |
+| `morph.*` | 形态学参数，影响碎片合并和噪声过滤 |
+| `beacon.n_segments` | 灯带分段数量，当前默认 2 |
+| `beacon.sync_color` | 同步头颜色 |
+| `beacon.color_wait` | WAIT 数据颜色 |
+| `beacon.color_go` | GO 数据颜色 |
+| `beacon.min_aspect_ratio` | 灯带最小长宽比 |
+| `beacon.min_area` | 最小有效面积 |
+| `beacon.uniformity_threshold` | 亮度均匀性阈值，用于过滤反光和遮挡 |
+| `filter.*` | 时间滤波和状态去抖参数 |
+| `pose.left.fx/fy/cx/cy` | 左相机内参，按左相机标定结果填写 |
+| `pose.right.fx/fy/cx/cy` | 右相机内参，按右相机标定结果填写 |
+| `pose.beacon_real_length_m` | 灯带真实长度，坐标计算必须准确填写 |
+| `debug` | 是否发布调试图像 |

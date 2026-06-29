@@ -12,6 +12,7 @@
 ///     -p camera_topic_right:=/cam_right/image_raw
 
 #include <chrono>
+#include <cmath>
 #include <memory>
 #include <string>
 #include <mutex>
@@ -32,19 +33,19 @@ class ColorDetectNode : public rclcpp::Node {
 public:
   ColorDetectNode() : Node("color_detect_node") {
     declare_params();
-    auto cfg = load_config();
+    cfg_ = load_config();
 
     // 两个独立的检测器（各带自己的状态机）
-    det_left_  = std::make_unique<BeaconDetector>(cfg);
-    det_right_ = std::make_unique<BeaconDetector>(cfg);
+    det_left_  = std::make_unique<BeaconDetector>(cfg_);
+    det_right_ = std::make_unique<BeaconDetector>(cfg_);
 
     // 订阅双摄像头
     sub_left_ = create_subscription<sensor_msgs::msg::Image>(
-        cfg.camera_topic_left, rclcpp::QoS(2).best_effort(),
+        cfg_.camera_topic_left, rclcpp::QoS(2).best_effort(),
         std::bind(&ColorDetectNode::cb_left, this, std::placeholders::_1));
 
     sub_right_ = create_subscription<sensor_msgs::msg::Image>(
-        cfg.camera_topic_right, rclcpp::QoS(2).best_effort(),
+        cfg_.camera_topic_right, rclcpp::QoS(2).best_effort(),
         std::bind(&ColorDetectNode::cb_right, this, std::placeholders::_1));
 
     // 发布融合结果
@@ -55,7 +56,7 @@ public:
     pub_right_state_ = create_publisher<std_msgs::msg::String>("/color_detect/right_state", 10);
 
     // 可选：调试图像
-    if (cfg.debug_output) {
+    if (cfg_.debug_output) {
       pub_debug_left_ = create_publisher<sensor_msgs::msg::Image>(
           "/color_detect/debug_left", rclcpp::QoS(2));
       pub_debug_right_ = create_publisher<sensor_msgs::msg::Image>(
@@ -68,12 +69,19 @@ public:
 
     RCLCPP_INFO(get_logger(), "===========================================");
     RCLCPP_INFO(get_logger(), "  Color Detect Node (Dual Cam) Started");
-    RCLCPP_INFO(get_logger(), "  Left:  %s", cfg.camera_topic_left.c_str());
-    RCLCPP_INFO(get_logger(), "  Right: %s", cfg.camera_topic_right.c_str());
+    RCLCPP_INFO(get_logger(), "  Left:  %s", cfg_.camera_topic_left.c_str());
+    RCLCPP_INFO(get_logger(), "  Right: %s", cfg_.camera_topic_right.c_str());
     RCLCPP_INFO(get_logger(), "  Sync=%s  WAIT=%s  GO=%s",
-                cfg.sync_color.c_str(), cfg.color_wait.c_str(), cfg.color_go.c_str());
+                cfg_.sync_color.c_str(), cfg_.color_wait.c_str(), cfg_.color_go.c_str());
     RCLCPP_INFO(get_logger(), "  Segments=%d | V_thresh=%d | Aspect=%.1f",
-                cfg.n_segments, cfg.v_threshold, cfg.min_aspect_ratio);
+                cfg_.n_segments, cfg_.v_threshold, cfg_.min_aspect_ratio);
+    RCLCPP_INFO(get_logger(), "  Pose left  fx=%.1f fy=%.1f cx=%.1f cy=%.1f",
+                cfg_.left_intrinsics.fx, cfg_.left_intrinsics.fy,
+                cfg_.left_intrinsics.cx, cfg_.left_intrinsics.cy);
+    RCLCPP_INFO(get_logger(), "  Pose right fx=%.1f fy=%.1f cx=%.1f cy=%.1f len=%.3fm",
+                cfg_.right_intrinsics.fx, cfg_.right_intrinsics.fy,
+                cfg_.right_intrinsics.cx, cfg_.right_intrinsics.cy,
+                cfg_.beacon_real_length_m);
     RCLCPP_INFO(get_logger(), "===========================================");
   }
 
@@ -102,6 +110,15 @@ private:
     declare_parameter<int>("filter.temporal_window", 5);
     declare_parameter<int>("filter.debounce_frames", 3);
     declare_parameter<int>("filter.lost_timeout_ms", 200);
+    declare_parameter<double>("pose.left.fx", 600.0);
+    declare_parameter<double>("pose.left.fy", 600.0);
+    declare_parameter<double>("pose.left.cx", 640.0);
+    declare_parameter<double>("pose.left.cy", 360.0);
+    declare_parameter<double>("pose.right.fx", 600.0);
+    declare_parameter<double>("pose.right.fy", 600.0);
+    declare_parameter<double>("pose.right.cx", 640.0);
+    declare_parameter<double>("pose.right.cy", 360.0);
+    declare_parameter<double>("pose.beacon_real_length_m", 0.20);
     declare_parameter<bool>("debug", false);
   }
 
@@ -130,8 +147,33 @@ private:
     c.temporal_window     = get_parameter("filter.temporal_window").as_int();
     c.debounce_frames     = get_parameter("filter.debounce_frames").as_int();
     c.lost_timeout_ms     = get_parameter("filter.lost_timeout_ms").as_int();
+    c.left_intrinsics.fx  = get_parameter("pose.left.fx").as_double();
+    c.left_intrinsics.fy  = get_parameter("pose.left.fy").as_double();
+    c.left_intrinsics.cx  = get_parameter("pose.left.cx").as_double();
+    c.left_intrinsics.cy  = get_parameter("pose.left.cy").as_double();
+    c.right_intrinsics.fx = get_parameter("pose.right.fx").as_double();
+    c.right_intrinsics.fy = get_parameter("pose.right.fy").as_double();
+    c.right_intrinsics.cx = get_parameter("pose.right.cx").as_double();
+    c.right_intrinsics.cy = get_parameter("pose.right.cy").as_double();
+    c.beacon_real_length_m = get_parameter("pose.beacon_real_length_m").as_double();
     c.debug_output        = get_parameter("debug").as_bool();
     return c;
+  }
+
+  void estimate_pose(BeaconState& state, const CameraIntrinsics& intrinsics) const {
+    state.pose_valid = false;
+    if (state.state == BeaconState::UNKNOWN || state.beacon_length_px <= 1.0f ||
+        intrinsics.fx <= 1.0f || intrinsics.fy <= 1.0f ||
+        cfg_.beacon_real_length_m <= 0.0f) {
+      return;
+    }
+
+    state.pose_z_m = intrinsics.fx * cfg_.beacon_real_length_m / state.beacon_length_px;
+    state.pose_x_m = (state.beacon_center_x - intrinsics.cx) * state.pose_z_m / intrinsics.fx;
+    state.pose_y_m = (state.beacon_center_y - intrinsics.cy) * state.pose_z_m / intrinsics.fy;
+    constexpr float kRadToDeg = 57.2957795f;
+    state.yaw_deg = std::atan2(state.pose_x_m, state.pose_z_m) * kRadToDeg;
+    state.pose_valid = true;
   }
 
   /// @brief 检测一帧 + 发布融合结果（左右共用）
@@ -140,10 +182,12 @@ private:
     auto& det = (side == LEFT) ? det_left_ : det_right_;
     auto& fuse_state = (side == LEFT) ? fuse_left_raw_ : fuse_right_raw_;
     auto& pub_debug = (side == LEFT) ? pub_debug_left_ : pub_debug_right_;
+    const auto& intrinsics = (side == LEFT) ? cfg_.left_intrinsics : cfg_.right_intrinsics;
     const char* side_name = (side == LEFT) ? "L" : "R";
 
     // 检测
     auto raw = (*det).process_frame(frame);
+    estimate_pose(raw, intrinsics);
     fuse_state = raw;
 
     // 发布侧边状态（调试）
@@ -214,6 +258,8 @@ private:
   }
 
   enum CameraSide { LEFT, RIGHT };
+
+  BeaconConfig cfg_;
 
   // 两个检测器（各带独立状态机）
   std::unique_ptr<BeaconDetector> det_left_;

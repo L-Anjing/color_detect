@@ -1,6 +1,6 @@
 #include "color_detect/beacon_protocol.hpp"
-#include <sstream>
 #include <algorithm>
+#include <sstream>
 
 namespace color_detect {
 
@@ -34,7 +34,9 @@ std::string BeaconState::to_string() const {
       << "(" << static_cast<int>(state) << ")"
       << ", conf=" << confidence
       << ", vis=" << n_visible_segments << "/2"
-      << ", angle=" << beacon_angle_deg << "deg}";
+      << ", angle=" << beacon_angle_deg << "deg"
+      << ", pose=(" << pose_x_m << "," << pose_y_m << "," << pose_z_m << ")"
+      << ", yaw=" << yaw_deg << "deg}";
   return oss.str();
 }
 
@@ -46,6 +48,14 @@ std::string BeaconState::to_json() const {
       << ",\"c\":" << confidence
       << ",\"v\":" << n_visible_segments
       << ",\"a\":" << beacon_angle_deg
+      << ",\"u\":" << beacon_center_x
+      << ",\"p\":" << beacon_center_y
+      << ",\"l\":" << beacon_length_px
+      << ",\"pv\":" << (pose_valid ? 1 : 0)
+      << ",\"x\":" << pose_x_m
+      << ",\"y\":" << pose_y_m
+      << ",\"z\":" << pose_z_m
+      << ",\"yaw\":" << yaw_deg
       << "}";
   return oss.str();
 }
@@ -63,12 +73,14 @@ BeaconState BeaconProtocol::decode(
     float angle_deg,
     float center_x,
     float center_y,
+    float length_px,
     float area_px) const {
 
   BeaconState r;
   r.beacon_angle_deg = angle_deg;
   r.beacon_center_x = center_x;
   r.beacon_center_y = center_y;
+  r.beacon_length_px = length_px;
   r.beacon_area_px = area_px;
 
   if (segments.empty()) return r;

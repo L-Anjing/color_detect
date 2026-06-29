@@ -45,7 +45,16 @@ BeaconState BeaconDetector::process_frame(const cv::Mat& bgr_frame) {
 
   BeaconState raw = protocol_.decode(best->segment_colors,
       best->rotated_rect.angle,
-      best->rotated_rect.center.x, best->rotated_rect.center.y, best->area);
+      best->rotated_rect.center.x, best->rotated_rect.center.y,
+      std::max(best->rotated_rect.size.width, best->rotated_rect.size.height),
+      best->area);
+  if (hsv.cols > 0 && hsv.rows > 0) {
+    const float scale_x = static_cast<float>(bgr_frame.cols) / hsv.cols;
+    const float scale_y = static_cast<float>(bgr_frame.rows) / hsv.rows;
+    raw.beacon_center_x *= scale_x;
+    raw.beacon_center_y *= scale_y;
+    raw.beacon_length_px *= (scale_x + scale_y) * 0.5f;
+  }
   raw.timestamp_ms = now_ms;
 
   auto filtered = state_machine_.update(raw, now_ms);
@@ -175,9 +184,11 @@ std::vector<ColorClass> BeaconDetector::segment_candidate(
 
   cv::Point2f axis;
   if (sz.width >= sz.height) {
-    axis = {std::cos(ang * CV_PI / 180), std::sin(ang * CV_PI / 180)};
+    axis = {static_cast<float>(std::cos(ang * CV_PI / 180)),
+            static_cast<float>(std::sin(ang * CV_PI / 180))};
   } else {
-    axis = {std::cos((ang + 90) * CV_PI / 180), std::sin((ang + 90) * CV_PI / 180)};
+    axis = {static_cast<float>(std::cos((ang + 90) * CV_PI / 180)),
+            static_cast<float>(std::sin((ang + 90) * CV_PI / 180))};
     std::swap(sz.width, sz.height);
   }
 

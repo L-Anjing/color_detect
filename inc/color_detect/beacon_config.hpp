@@ -6,6 +6,13 @@
 
 namespace color_detect {
 
+struct CameraIntrinsics {
+  float fx = 600.0f;
+  float fy = 600.0f;
+  float cx = 640.0f;
+  float cy = 360.0f;
+};
+
 /// @brief 视觉信标系统——可调参数
 struct BeaconConfig {
   // ── 预处理 ──
@@ -55,6 +62,11 @@ struct BeaconConfig {
   // ── 相机话题（双摄） ──
   std::string camera_topic_left  = "/cam_left/image_raw";
   std::string camera_topic_right = "/cam_right/image_raw";
+
+  // ── 单目粗定位 ──
+  CameraIntrinsics left_intrinsics;
+  CameraIntrinsics right_intrinsics;
+  float beacon_real_length_m = 0.20f;
 
   // ── 调试 ──
   bool debug_output = false;

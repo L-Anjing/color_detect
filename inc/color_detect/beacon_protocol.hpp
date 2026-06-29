@@ -29,7 +29,13 @@ struct BeaconState {
   float beacon_angle_deg = 0.0f;
   float beacon_center_x = 0.0f;
   float beacon_center_y = 0.0f;
+  float beacon_length_px = 0.0f;
   float beacon_area_px = 0.0f;
+  bool pose_valid = false;
+  float pose_x_m = 0.0f;
+  float pose_y_m = 0.0f;
+  float pose_z_m = 0.0f;
+  float yaw_deg = 0.0f;
   int n_visible_segments = 0;
   int n_white_segments = 0;
 
@@ -52,6 +58,7 @@ public:
                      float angle_deg,
                      float center_x,
                      float center_y,
+                     float length_px,
                      float area_px) const;
 
 private:
