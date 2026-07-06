@@ -13,6 +13,7 @@ namespace color_detect {
 enum class ColorClass : uint8_t {
   UNKNOWN = 0,
   WHITE,
+  BLUE,
   CYAN,
   YELLOW,
   MAGENTA,

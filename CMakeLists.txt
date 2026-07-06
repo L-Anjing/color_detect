@@ -4,111 +4,82 @@ project(color_detect)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# ═════════════════════════════════════════════
-#  ROS2 模式 — 标准 ROS2 节点
-# ═════════════════════════════════════════════
-
-# ---- ROS2 + OpenCV 依赖 ----
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
-find_package(std_msgs REQUIRED)
-find_package(sensor_msgs REQUIRED)
-find_package(cv_bridge REQUIRED)
-find_package(OpenCV REQUIRED COMPONENTS core imgproc)
+find_package(OpenCV REQUIRED COMPONENTS core imgproc highgui videoio)
 
-# ---- Serial 库（可选，默认尝试常见路径） ----
-find_path(SERIAL_INCLUDE_DIR serial/serial.h
-    HINTS
-        /usr/include
-        /usr/local/include
-        ${CMAKE_SOURCE_DIR}/../../3rd_ws/install/serial/include
-    NO_DEFAULT_PATH)
-find_library(SERIAL_LIBRARY serial
-    HINTS
-        /usr/lib
-        /usr/local/lib
-        ${CMAKE_SOURCE_DIR}/../../3rd_ws/install/serial/lib
-    NO_DEFAULT_PATH)
+set(SERIAL_PREFIX_HINTS
+    "$ENV{HOME}/thirdparty/serial_ws/install/serial"
+    "$ENV{HOME}/thirdparty/serial_ws/install"
+    "$ENV{HOME}/workspace/3rd_ws/install/serial"
+    "$ENV{HOME}/workspace/3rd_ws/install"
+    "${CMAKE_SOURCE_DIR}/../../thirdparty/serial_ws/install/serial"
+    "${CMAKE_SOURCE_DIR}/../../thirdparty/serial_ws/install"
+    "${CMAKE_SOURCE_DIR}/../../3rd_ws/install/serial"
+    "${CMAKE_SOURCE_DIR}/../../3rd_ws/install"
+)
 
-if(SERIAL_INCLUDE_DIR AND SERIAL_LIBRARY)
-    message(STATUS "[color_detect] Serial library FOUND — building serial_bridge_node")
-    set(HAS_SERIAL TRUE)
-    get_filename_component(SERIAL_LIBRARY_DIR "${SERIAL_LIBRARY}" DIRECTORY)
-else()
-    message(STATUS "[color_detect] Serial library NOT FOUND — skipping serial_bridge_node")
-    set(HAS_SERIAL FALSE)
+if(DEFINED ENV{AMENT_PREFIX_PATH})
+    string(REPLACE ":" ";" AMENT_PREFIX_HINTS "$ENV{AMENT_PREFIX_PATH}")
+    list(APPEND SERIAL_PREFIX_HINTS ${AMENT_PREFIX_HINTS})
 endif()
 
-# ---- 包含路径 ----
-include_directories(inc ${OpenCV_INCLUDE_DIRS})
+list(APPEND SERIAL_PREFIX_HINTS ${CMAKE_PREFIX_PATH})
+list(REMOVE_DUPLICATES SERIAL_PREFIX_HINTS)
 
-# ─────────────────────────────────────────────
-#  Beacon 核心库（静态库，纯 OpenCV，可被其他节点复用）
-# ─────────────────────────────────────────────
+find_path(SERIAL_INCLUDE_DIR serial/serial.h
+    HINTS ${SERIAL_PREFIX_HINTS}
+    PATH_SUFFIXES include)
+find_library(SERIAL_LIBRARY serial
+    HINTS ${SERIAL_PREFIX_HINTS}
+    PATH_SUFFIXES lib lib64)
+
+if(NOT SERIAL_INCLUDE_DIR OR NOT SERIAL_LIBRARY)
+    message(STATUS "SERIAL_PREFIX_HINTS=${SERIAL_PREFIX_HINTS}")
+    message(FATAL_ERROR
+        "color_detect requires serial/serial.h and libserial.so. "
+        "Source your serial workspace first, e.g. "
+        "source ~/thirdparty/serial_ws/install/setup.bash")
+endif()
+message(STATUS "[color_detect] serial include: ${SERIAL_INCLUDE_DIR}")
+message(STATUS "[color_detect] serial library: ${SERIAL_LIBRARY}")
+get_filename_component(SERIAL_LIBRARY_DIR "${SERIAL_LIBRARY}" DIRECTORY)
+
 set(BEACON_SOURCES
     src/color_detect/core/color_classifier.cpp
     src/color_detect/core/beacon_protocol.cpp
-    src/color_detect/core/state_machine.cpp
     src/color_detect/core/beacon_detector.cpp
-    src/color_detect/core/beacon_fusion.cpp
 )
 
 add_library(color_detect_core STATIC ${BEACON_SOURCES})
 target_include_directories(color_detect_core PUBLIC inc)
 target_link_libraries(color_detect_core PUBLIC ${OpenCV_LIBS})
-# 注意：核心库源代码不依赖任何 ROS2 头文件，无需 ament_target_dependencies
 
-# ─────────────────────────────────────────────
-#  检测节点
-# ─────────────────────────────────────────────
 add_executable(color_detect_node
     src/color_detect/nodes/color_detect_node.cpp)
 
+target_include_directories(color_detect_node PRIVATE
+    ${SERIAL_INCLUDE_DIR})
+
 target_link_libraries(color_detect_node
     color_detect_core
-    ${OpenCV_LIBS})
+    ${OpenCV_LIBS}
+    ${SERIAL_LIBRARY})
 
-ament_target_dependencies(color_detect_node
-    rclcpp std_msgs sensor_msgs cv_bridge)
+ament_target_dependencies(color_detect_node rclcpp)
 
-# ─────────────────────────────────────────────
-#  Serial 桥接节点（可选）
-# ─────────────────────────────────────────────
-if(HAS_SERIAL)
-    add_executable(serial_bridge_node
-        src/color_detect/nodes/serial_bridge_node.cpp)
+set_target_properties(color_detect_node PROPERTIES
+    BUILD_RPATH "${SERIAL_LIBRARY_DIR}"
+    INSTALL_RPATH "${SERIAL_LIBRARY_DIR}")
 
-    ament_target_dependencies(serial_bridge_node
-        rclcpp std_msgs)
-
-    target_include_directories(serial_bridge_node PRIVATE
-        ${SERIAL_INCLUDE_DIR})
-
-    target_link_libraries(serial_bridge_node
-        ${SERIAL_LIBRARY})
-
-    set_target_properties(serial_bridge_node PROPERTIES
-        BUILD_RPATH "${SERIAL_LIBRARY_DIR}"
-        INSTALL_RPATH "${SERIAL_LIBRARY_DIR}")
-endif()
-
-# ─────────────────────────────────────────────
-#  安装
-# ─────────────────────────────────────────────
-set(INSTALL_TARGETS color_detect_core color_detect_node)
-if(HAS_SERIAL)
-    list(APPEND INSTALL_TARGETS serial_bridge_node)
-endif()
-
-install(TARGETS ${INSTALL_TARGETS}
+install(TARGETS color_detect_core color_detect_node
     DESTINATION lib/${PROJECT_NAME})
 
-install(DIRECTORY launch config
+install(DIRECTORY config scripts
     DESTINATION share/${PROJECT_NAME})
 
 install(DIRECTORY inc/
     DESTINATION include/${PROJECT_NAME}
     FILES_MATCHING PATTERN "*.hpp")
 
-# ---- Ament ----
 ament_package()

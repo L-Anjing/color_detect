@@ -1,74 +1,69 @@
 #ifndef COLOR_DETECT_BEACON_CONFIG_HPP_
 #define COLOR_DETECT_BEACON_CONFIG_HPP_
 
-#include <cstdint>
 #include <string>
 
 namespace color_detect {
 
-struct CameraIntrinsics {
-  float fx = 600.0f;
-  float fy = 600.0f;
-  float cx = 640.0f;
-  float cy = 360.0f;
-};
-
-/// @brief 视觉信标系统——可调参数
 struct BeaconConfig {
-  // ── 预处理 ──
-  int resize_width = 640;
+  int resize_width = 480;
   int gaussian_kernel = 3;
 
-  // ── CLAHE（自适应直方图均衡，改善不均匀光照） ──
   bool use_clahe = true;
   float clahe_clip_limit = 2.0f;
   int clahe_grid_size = 8;
+  float saturation_gain = 1.8f;
+  float value_gain = 1.05f;
 
-  // ── HSV 阈值 ──
-  int v_threshold = 200;
-  int v_min_bright = 180;
+  int v_threshold = 25;
+  int v_min_bright = 20;
   int s_threshold_white = 40;
-  int s_min_for_color = 60;
-  int saturation_threshold = 100;  // S 通道二值化阈值（过滤白色灯管）
-  int hue_tolerance = 12;
+  int s_min_for_color = 30;
+  int saturation_threshold = 30;
+  int hue_tolerance = 22;
+  int white_core_link_dilation = 11;
+  int candidate_bright_threshold = 180;
+  int candidate_threshold_delta = 45;
+  float candidate_min_area_ratio = 0.001f;
+  float candidate_min_fill_ratio = 0.06f;
+  float candidate_min_aspect_ratio = 2.0f;
+  int yellow_h_low = 18;
+  int yellow_h_high = 52;
+  int yellow_s_low = 32;
+  int yellow_v_low = 20;
+  int green_h_low = 45;
+  int green_h_high = 80;
+  int green_s_low = 30;
+  int green_v_low = 20;
+  int red_h_low = 172;
+  int red_h_high = 8;
+  int red_s_low = 35;
+  int red_v_low = 40;
 
-  // ── 形态学 ──
   int morph_open_size = 3;
   int morph_close_size = 7;
-  int dilation_size = 3;           // 膨胀核大小（合并碎片）
+  int dilation_size = 3;
+  int morph_close_iterations = 2;
+  int morph_dilate_iterations = 1;
 
-  // ── 灯带形状 ──
-  float min_aspect_ratio = 3.0f;
-  int min_area_px = 50;
-  float max_area_ratio = 0.3f;
-  float min_solidity = 0.85f;
+  int min_contour_area_px = 12;
+  float min_strip_aspect_ratio = 2.0f;
+  float min_rect_fill_ratio = 0.06f;
+  float halo_sample_scale = 2.8f;
+  float merge_angle_tolerance_deg = 12.0f;
+  float merge_axis_gap_ratio = 4.0f;
+  float merge_perp_gap_ratio = 1.5f;
+  bool use_roi = true;
+  float roi_y_min_ratio = 0.35f;
+  float roi_y_max_ratio = 1.00f;
+  float roi_x_min_ratio = 0.00f;
+  float roi_x_max_ratio = 1.00f;
 
-  // ── 候选筛选 ──
-  float uniformity_threshold = 0.3f;   // 亮度均匀性：std/mean < 此值才通过
-
-  // ── 协议 ──
-  int n_segments = 2;
-  std::string sync_color = "YELLOW";
-  std::string color_wait = "RED";
-  std::string color_go = "GREEN";
-  float color_consistency_thresh = 0.7f;
-
-  // ── 时间滤波 ──
-  int temporal_window = 5;
-  int debounce_frames = 3;
-  int lost_timeout_ms = 200;
-  int init_confirm_frames = 5;
-
-  // ── 相机话题（双摄） ──
-  std::string camera_topic_left  = "/cam_left/image_raw";
-  std::string camera_topic_right = "/cam_right/image_raw";
-
-  // ── 单目粗定位 ──
-  CameraIntrinsics left_intrinsics;
-  CameraIntrinsics right_intrinsics;
-  float beacon_real_length_m = 0.20f;
-
-  // ── 调试 ──
+  int n_segments = 1;
+  std::string color_stop = "RED";
+  float color_consistency_thresh = 0.30f;
+  int output_stop_frames = 1;
+  int output_go_frames = 18;
   bool debug_output = false;
 };
 

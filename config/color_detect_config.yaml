@@ -1,57 +1,162 @@
-# color_detect 双摄像头视觉信标配置
-# 相机格式/分辨率由 camera_stream/config/camera_stream.yaml 管理。
+# Main color_detect pipeline.
+# Flow: low-exposure frame -> bright strip candidate -> mean HSV color check
+# -> WAIT if red exists, else GO -> serial send.
 /color_detect_node:
   ros__parameters:
-    # 双摄像头话题
-    camera_topic_left:  "/cam_left/image_raw"
-    camera_topic_right: "/cam_right/image_raw"
+    direct_camera:
+      # Single camera device path.
+      device: "/dev/cam_right"
+      # Requested capture width in pixels.
+      width: 1280
+      # Requested capture height in pixels.
+      height: 720
+      # Requested capture FPS.
+      fps: 30
+      # Requested camera pixel format / codec.
+      input_format: "MJPG"
+      # Driver buffer count; smaller is lower latency.
+      buffer_size: 1
+      # Exposure mode; keep 1 for manual on typical UVC cameras.
+      auto_exposure: 1
+      # Manual exposure value sent to v4l2.
+      exposure_time: 1
 
-    resize_width: 640
+    serial:
+      # Serial device path for state output.
+      port: "/dev/detection"
+      # Serial baudrate.
+      baudrate: 115200
+      # Receive this 1-byte command inside CA CA XX AA BB to stop this node.
+      stop_command: 2
 
-    # ── CLAHE（自适应直方图均衡） ──
-    clahe:
+    display:
+      # Show debug windows if true.
       enabled: true
+      # Debug window scale factor.
+      scale: 0.75
+
+    # Max width used by detector internals after resize.
+    resize_width: 480
+    # Restart if no frame arrives within this time.
+    input_timeout_sec: 10.0
+
+    clahe:
+      # Enable CLAHE for ROI color enhancement only.
+      enabled: true
+      # CLAHE clip limit on ROI V channel.
       clip_limit: 2.0
+      # CLAHE grid size on ROI V channel.
       grid_size: 8
 
+    color:
+      # ROI blur kernel before color statistics; 0 disables.
+      gaussian_kernel: 3
+      # ROI saturation gain before color statistics.
+      saturation_gain: 1.8
+      # ROI brightness gain before color statistics.
+      value_gain: 1.5
+
     hsv:
-      v_threshold: 200
+      # Base V threshold for bright candidate extraction.
+      v_threshold: 18
+      # Minimum V counted as valid colored light.
+      v_min_bright: 16
+      # Max S still considered white sync core.
       s_threshold_white: 40
-      saturation_threshold: 100   # S 通道阈值（过滤白色灯管）
-      hue_tolerance: 12
+      # Minimum S counted as a colored pixel.
+      s_min_for_color: 30
+      # Global S threshold for color candidate mask.
+      saturation_threshold: 24
+      # Hue tolerance used by color classifier ranges.
+      hue_tolerance: 22
+      # Dilation size linking white core to colored halo.
+      white_core_link_dilation: 15
+      # Base grayscale threshold used by GUI-like bright-strip candidate search.
+      candidate_bright_threshold: 180
+      # Dynamic threshold is brightest-pixel minus this delta.
+      candidate_threshold_delta: 45
+      # Minimum contour area / ROI area; filters tiny floating reflections.
+      candidate_min_area_ratio: 0.001
+      # Minimum contour fill ratio, matched to the simple GUI detector.
+      candidate_min_fill_ratio: 0.06
+      # Minimum long/short side ratio before a bright blob is strip-like.
+      candidate_min_aspect_ratio: 2.0
+      yellow:
+        # Yellow hue low bound for HSV debug reference.
+        h_low: 18
+        # Yellow hue high bound for HSV debug reference.
+        h_high: 52
+        # Yellow minimum saturation for HSV debug reference.
+        s_low: 32
+        # Yellow minimum brightness for HSV debug reference.
+        v_low: 20
+      green:
+        # Green hue low bound, kept only for debug/reference.
+        h_low: 45
+        # Green hue high bound, kept only for debug/reference.
+        h_high: 80
+        # Green minimum saturation for debug/reference.
+        s_low: 30
+        # Green minimum brightness for debug/reference.
+        v_low: 20
+      red:
+        # Red hue low bound for HSV debug reference.
+        h_low: 172
+        # Red hue high bound for HSV debug reference.
+        h_high: 8
+        # Red minimum saturation for stable WAIT trigger.
+        s_low: 35
+        # Red minimum brightness for stable WAIT trigger.
+        v_low: 40
+
+    roi:
+      # Limit search to ROI if true.
+      enabled: true
+      # ROI top boundary as image-height ratio.
+      y_min_ratio: 0.35
+      # ROI bottom boundary as image-height ratio.
+      y_max_ratio: 1.00
+      # ROI left boundary as image-width ratio.
+      x_min_ratio: 0.00
+      # ROI right boundary as image-width ratio.
+      x_max_ratio: 1.00
 
     morph:
+      # Opening kernel size for removing small noise.
       open_size: 3
-      close_size: 7
-      dilation_size: 3
+      # Closing kernel size for filling strip gaps.
+      close_size: 9
+      # Final dilation kernel size for joining fragments.
+      dilation_size: 5
+      # Closing iterations, same idea as the simple GUI detector.
+      close_iterations: 2
+      # Dilation iterations after closing.
+      dilate_iterations: 1
 
     beacon:
-      n_segments: 2
-      sync_color: "YELLOW"
-      color_wait: "RED"
-      color_go: "GREEN"
-      min_aspect_ratio: 3.0
-      min_area: 50
-      uniformity_threshold: 0.3   # 亮度均匀性门槛（std/mean）
+      # Max angle difference for merging split strip fragments.
+      merge_angle_tolerance_deg: 12.0
+      # Max along-strip gap in units of strip thickness when merging fragments.
+      merge_axis_gap_ratio: 4.0
+      # Max perpendicular offset in units of strip thickness when merging fragments.
+      merge_perp_gap_ratio: 1.5
+      # Sampling segment count along a candidate strip; single-strip mode uses 1.
+      n_segments: 1
+      # Red means WAIT; no red means GO.
+      color_stop: "RED"
+      # Minimum contour area kept after candidate extraction.
+      min_contour_area: 12
+      # Minimum long-side / short-side ratio for strip-like shapes.
+      min_strip_aspect_ratio: 2.0
+      # Minimum contour-area / minRect-area ratio for strip-like shapes.
+      min_rect_fill_ratio: 0.06
+      # Segment sampling height relative to strip thickness.
+      halo_sample_scale: 2.8
+      # Minimum dominant-color ratio inside one segment ROI.
+      color_consistency_threshold: 0.30
 
-    filter:
-      temporal_window: 5
-      debounce_frames: 3
-      lost_timeout_ms: 200
-
-    # 单目粗定位参数
-    # x 向右，y 向下，z 向前，单位 m；左右内参按各自相机标定结果填写。
-    pose:
-      left:
-        fx: 600.0
-        fy: 600.0
-        cx: 640.0
-        cy: 360.0
-      right:
-        fx: 600.0
-        fy: 600.0
-        cx: 640.0
-        cy: 360.0
-      beacon_real_length_m: 0.20
-
-    debug: false
+    output:
+      # Frames required before entering WAIT after red appears.
+      stop_frames: 1
+      # Frames required before returning to GO after red disappears.
+      go_frames: 18
