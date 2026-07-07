@@ -298,7 +298,7 @@ std::vector<BeaconCandidate> BeaconDetector::find_candidates(
   cv::threshold(blurred, dyn_mask, dynamic_threshold, 255, cv::THRESH_BINARY);
 
   cv::Mat red_mask;
-  const int red_candidate_v_low = std::max(10, config_.red_v_low / 2);
+  const int red_candidate_v_low = std::max(1, config_.red_v_floor);
   const int red_candidate_s_low = std::max(20, config_.red_s_low);
   if (config_.red_h_low > config_.red_h_high) {
     cv::Mat red_low;
@@ -467,8 +467,17 @@ std::vector<ColorClass> BeaconDetector::segment_candidate(
     cv::inRange(sample_hsv, cv::Scalar(0, 25, 50), cv::Scalar(179, 255, 255), color_mask);
     cv::bitwise_and(color_mask, sample_mask, color_mask);
 
+    std::vector<cv::Mat> sample_channels;
+    cv::split(sample_hsv, sample_channels);
+    double roi_v_max = 0.0;
+    cv::minMaxLoc(sample_channels[2], nullptr, &roi_v_max, nullptr, nullptr, sample_mask);
+    const int adaptive_red_v_low = std::clamp(
+        static_cast<int>(roi_v_max) - 35,
+        std::max(1, config_.red_v_floor),
+        std::max(std::max(1, config_.red_v_floor), config_.red_v_low / 2));
+
     cv::Mat red_mask;
-    const int red_candidate_v_low = std::max(10, config_.red_v_low / 2);
+    const int red_candidate_v_low = adaptive_red_v_low;
     const int red_candidate_s_low = std::max(20, config_.red_s_low);
     if (config_.red_h_low > config_.red_h_high) {
       cv::Mat red_low;
@@ -498,7 +507,7 @@ std::vector<ColorClass> BeaconDetector::segment_candidate(
     }
 
     float confidence = 0.0f;
-    if (red_pixels >= 3 && red_ratio >= 0.02f) {
+    if (red_pixels >= 3 && red_ratio >= config_.red_min_ratio) {
       colors[i] = ColorClass::RED;
       confidence = std::min(1.0f, red_ratio * 8.0f);
     } else {

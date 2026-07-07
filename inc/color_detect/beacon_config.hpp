@@ -39,6 +39,8 @@ struct BeaconConfig {
   int red_h_high = 8;
   int red_s_low = 35;
   int red_v_low = 40;
+  int red_v_floor = 12;
+  float red_min_ratio = 0.02f;
 
   int morph_open_size = 3;
   int morph_close_size = 7;

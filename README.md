@@ -15,7 +15,6 @@ State byte:
 ```text
 0 = GO
 1 = WAIT
-2 = STOP FUNC
 ```
 
 ## Build
@@ -43,7 +42,7 @@ Use it for:
 
 ```text
 direct_camera.*  camera device, resolution, FPS, MJPG, low exposure
-serial.*         serial port, baudrate, stop command
+serial.*         serial port and baudrate for one-way GO/WAIT output
 display.*        local OpenCV windows
 hsv.*            color thresholds
 roi.*            detection crop

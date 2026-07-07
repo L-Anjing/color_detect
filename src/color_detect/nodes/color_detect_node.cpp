@@ -30,14 +30,12 @@ namespace {
 
 constexpr uint8_t kHead[2] = {0xCA, 0xCA};
 constexpr uint8_t kTail[2] = {0xAA, 0xBB};
-constexpr size_t kPacketSize = 5;
 
 uint8_t state_to_byte(BeaconState::State state) {
   switch (state) {
-    case BeaconState::STOP:
-      return 2;
     case BeaconState::WAIT:
       return 1;
+    case BeaconState::STOP:
     case BeaconState::GO:
     case BeaconState::UNKNOWN:
     default:
@@ -74,7 +72,6 @@ public:
     RCLCPP_INFO(get_logger(), "  output debounce wait=%d go=%d frames",
                 cfg_.output_stop_frames, cfg_.output_go_frames);
     RCLCPP_INFO(get_logger(), "  serial tx=CA CA [00 GO | 01 WAIT] AA BB");
-    RCLCPP_INFO(get_logger(), "  serial rx stop=CA CA %02X AA BB", serial_stop_command_);
     RCLCPP_INFO(get_logger(), "===========================================");
   }
 
@@ -126,7 +123,6 @@ private:
 
     declare_parameter<std::string>("serial.port", "/dev/detection");
     declare_parameter<int>("serial.baudrate", 115200);
-    declare_parameter<int>("serial.stop_command", 2);
     declare_parameter<bool>("display.enabled", true);
     declare_parameter<double>("display.scale", 0.75);
 
@@ -161,6 +157,8 @@ private:
     declare_parameter<int>("hsv.red.h_high", 8);
     declare_parameter<int>("hsv.red.s_low", 35);
     declare_parameter<int>("hsv.red.v_low", 40);
+    declare_parameter<int>("hsv.red.v_floor", 12);
+    declare_parameter<double>("hsv.red.min_ratio", 0.02);
     declare_parameter<int>("morph.open_size", 3);
     declare_parameter<int>("morph.close_size", 7);
     declare_parameter<int>("morph.dilation_size", 3);
@@ -222,6 +220,9 @@ private:
     c.red_h_high = get_parameter("hsv.red.h_high").as_int();
     c.red_s_low = get_parameter("hsv.red.s_low").as_int();
     c.red_v_low = get_parameter("hsv.red.v_low").as_int();
+    c.red_v_floor = get_parameter("hsv.red.v_floor").as_int();
+    c.red_min_ratio =
+        static_cast<float>(get_parameter("hsv.red.min_ratio").as_double());
     c.morph_open_size = get_parameter("morph.open_size").as_int();
     c.morph_close_size = get_parameter("morph.close_size").as_int();
     c.dilation_size = get_parameter("morph.dilation_size").as_int();
@@ -271,8 +272,6 @@ private:
   void load_serial_params() {
     serial_port_ = get_parameter("serial.port").as_string();
     serial_baudrate_ = get_parameter("serial.baudrate").as_int();
-    const auto stop_command = get_parameter("serial.stop_command").as_int();
-    serial_stop_command_ = static_cast<int>(std::clamp<int64_t>(stop_command, 0, 255));
     display_enabled_ = get_parameter("display.enabled").as_bool();
     display_scale_ = std::max(0.1, get_parameter("display.scale").as_double());
   }
@@ -349,58 +348,6 @@ private:
     }
     RCLCPP_INFO(get_logger(), "Serial opened: %s @ %d",
                 serial_port_.c_str(), serial_baudrate_);
-  }
-
-  bool poll_serial_stop_command() {
-    if (!serial_.isOpen()) {
-      return false;
-    }
-
-    try {
-      const auto available = serial_.available();
-      if (available > 0) {
-        const auto bytes = serial_.read(available);
-        serial_rx_buffer_.insert(serial_rx_buffer_.end(), bytes.begin(), bytes.end());
-      }
-    } catch (const std::exception& e) {
-      RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 1000,
-                            "Serial read failed: %s", e.what());
-      return false;
-    }
-
-    while (serial_rx_buffer_.size() >= kPacketSize) {
-      const auto head = std::search(serial_rx_buffer_.begin(), serial_rx_buffer_.end(),
-                                    std::begin(kHead), std::end(kHead));
-      if (head == serial_rx_buffer_.end()) {
-        serial_rx_buffer_.clear();
-        return false;
-      }
-      if (head != serial_rx_buffer_.begin()) {
-        serial_rx_buffer_.erase(serial_rx_buffer_.begin(), head);
-      }
-      if (serial_rx_buffer_.size() < kPacketSize) {
-        return false;
-      }
-      if (serial_rx_buffer_[3] != kTail[0] || serial_rx_buffer_[4] != kTail[1]) {
-        serial_rx_buffer_.erase(serial_rx_buffer_.begin());
-        continue;
-      }
-
-      const uint8_t command = serial_rx_buffer_[2];
-      serial_rx_buffer_.erase(serial_rx_buffer_.begin(),
-                              serial_rx_buffer_.begin() + kPacketSize);
-      if (command == static_cast<uint8_t>(serial_stop_command_)) {
-        RCLCPP_WARN(get_logger(),
-                    "Received stop packet: CA CA %02X AA BB, shutting down",
-                    command);
-        return true;
-      }
-
-      RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000,
-                           "Ignoring serial packet: CA CA %02X AA BB", command);
-    }
-
-    return false;
   }
 
   void show_debug(const cv::Mat& frame) {
@@ -505,11 +452,6 @@ private:
   }
 
   void timer_cb() {
-    if (poll_serial_stop_command()) {
-      rclcpp::shutdown();
-      return;
-    }
-
     const bool frame_ok = read_and_process();
 
     const auto now = std::chrono::steady_clock::now();
@@ -553,8 +495,6 @@ private:
   serial::Serial serial_;
   std::string serial_port_ = "/dev/detection";
   int serial_baudrate_ = 115200;
-  int serial_stop_command_ = 2;
-  std::vector<uint8_t> serial_rx_buffer_;
   bool display_enabled_ = true;
   double display_scale_ = 0.75;
 
